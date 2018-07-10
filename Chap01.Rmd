@@ -1,0 +1,274 @@
+---
+title: "Ch01 整理テキスト形式"
+output: 
+    html_document:
+        toc: true
+        toc_float: true
+        highlight: tango
+        theme: flatly
+        css: mycss.css
+        code_folding: show
+        include:
+            - in_header: in_head.html
+        df_print: "paged"
+  
+---
+
+整理データ原則(tidy text principal)は, データの効果的で
+簡単な処理のためのに威力を発揮します. それはテキストを扱うときも同様です. 
+Hadley Wickhamによると整理データは次の決められた構造を持ちます. 
+
+-  個々の変数を1つの列にします
+-  個々の観測を1つの行にします
+-  個々のタイプの観測の単位が表です.
+
+
+これに準拠している整理テキスト形式とは, 1行に1つのトークンからなる表と
+定義する. トークンとはテキストとして意味を持つ単位です. 
+データによって異なり, 例えば単語, センテンス, 段落があります. 
+
+整理テキスト形式でデータを整理することで, dplyr等のtidyverseパッケージによって
+処理ができ, テキストの分析, 探索が効果的にお粉ます. 
+
+
+
+
+# ライブラリー
+
+```{r setup, message=FALSE}
+
+# load libs
+libs <- c( "tidyverse", "tidytext", "janeaustenr", "gutenbergr", "scales" )
+for( lib in libs ) {
+    if(!require(lib, character.only = TRUE)) {
+        install.packages(lib)
+        library(lib, character.only = TRUE)
+    }  
+} 
+
+```
+
+# unnest_tokens
+
+まずは文字列ベクトルを持つデータフレームを作成する
+
+```{r}
+text <- c("Because I could not stop for Death -",
+          "He kindly stopped for me -",
+          "The Carriage held but just Ourselves -",
+          "and Immortality")
+text_df <- data_frame(
+  line = seq_along(text), 
+  text = text
+)
+text_df
+```
+
+この状態はまだ整理テキスト分析に向かない. 
+各行が単語を連結したものであるためである. 
+これを1行を1文書の1トークンの形式に変換する必要がある. 
+
+テキストをトークンに分割するための関数もあるが, 
+整理データ構造に変換する関数`unnest_tokens`がある. 
+
+```{r}
+text_df %>%
+    unnest_tokens(word, text)
+```
+
+
+第１引数のwordは文書のトークンをどのレベルまで下げるかという指定であり, 
+第２引数のtextは対象のトークンを持つ列名である. 
+
+
+# ジューン・オースティンの作品の整理
+
+
+```{r}
+original_books <- 
+    austen_books() %>%
+    group_by(book) %>%
+    mutate(
+      linenumber = row_number(), 
+      chapter = cumsum(
+        str_detect(
+          text, 
+          regex("^chapter [\\divxlc]", ignore_case = TRUE) # \dはdigitのシンボル
+        )
+      )
+    ) %>%
+    ungroup()
+original_books
+```
+
+先ほどと同様に, textを単語単位のトークンにunnestを行う.
+
+```{r}
+tidy_books <-
+  original_books %>%
+  unnest_tokens(word, text)
+tidy_books
+```
+
+
+
+テキスト分析ではストップワードを除いて分析を行います. 
+次のようにしてストップワードを除きます. 
+
+```{r}
+data(stop_words)
+tidy_books <-
+    tidy_books %>%
+    anti_join(stop_words, by = "word") # tidy_textのstop_wordsデータセットを使う
+tidy_books
+```
+
+
+集計して最頻出単語を探し, グラフで確認する. 
+
+```{r}
+tidy_books %>%
+  count(word, sort = TRUE) %>%
+  filter(n > 600) %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(word, n)) + 
+  geom_col() + 　# stat = identityのgeom_bar
+  xlab(NULL) + 
+  coord_flip() + 
+  theme_light()
+```
+
+
+
+# gutenbergパッケージ
+
+`gutenberg`パッケージを使うと, Project Gutenbergコレクションの
+パブリックドメイン作品にアクセスすることができる.
+
+
+# 単語の出現頻度
+
+テキストマイニングではまず単語の出現頻度を比較する. 
+
+```{r cache = TRUE}
+hgwells <- 
+    gutenberg_download(c(35, 36, 5230, 159))
+
+tidy_hgwells <-
+    hgwells %>%
+    unnest_tokens(word, text) %>%
+    anti_join(stop_words, by = "word")
+```
+
+
+ダウンロードしたH・Ｇウェルズの４作品の最頻出語を調べてみる. 
+
+```{r}
+tidy_hgwells %>%
+    count(word, sort = TRUE)
+```
+
+
+次にプロンテ姉妹の作品を調べてみる. 
+
+```{r cache = TRUE}
+target_book_ids <- c(1260, 768, 969, 9182, 767)
+bronte <- gutenberg_download(target_book_ids)
+
+tidy_bronte <- 
+    bronte %>%
+    unnest_tokens(word, text) %>%
+    anti_join(stop_words)
+
+tidy_bronte %>%
+    count(word, sort = TRUE)
+
+
+```
+
+
+次に３のデータフレームを結合して調べてみる. 
+
+
+```{r}
+frequency <- 
+  bind_rows(
+    mutate(tidy_bronte, author = "Brontë Sisters"),
+    mutate(tidy_hgwells, author = "H.G. Wells"),
+    mutate(tidy_books, author = "Jane Austen")) %>%
+    mutate(word = str_extract(word, "[a-z']+")) %>%
+  count(author, word) %>%
+  group_by(author) %>%
+  mutate(proportion = n / sum(n)) %>%
+  select(-n) %>%
+  spread(author, proportion) %>%
+  gather(author, proportion, `Brontë Sisters`:`H.G. Wells`)
+
+```
+
+結果をプロットしてみる. 
+
+
+```{r}
+ggplot(frequency, 
+       aes(x = proportion, y = `Jane Austen`, 
+          color = abs(`Jane Austen` - proportion))) + 
+  geom_abline(color = "gray40", lty = 2) + 
+  geom_jitter(alpha = .1, size = 2.5, width = .3, height = .3) + 
+  geom_text(aes(label = word), check_overlap = TRUE, vjust = 1.5) +
+  scale_x_log10(labels = percent_format()) + 
+  scale_y_log10(labels = percent_format()) + 
+  scale_color_gradient(limits = c(0, .0011), 
+                       low = "darkslategray4", high = "gray75") + 
+  facet_wrap( ~ author, ncol = 2) + 
+  theme(legend.position = "none") + 
+  labs(y = "Jane Austen", x = "NULL")
+```
+
+
+最後に相関検定にかけてみる. 
+
+```{r}
+cor.test(
+  data = frequency[frequency$author == "Bronte Sisters",], 
+  ~ proportion + `Jane Austen`
+)
+cor.test(
+  data = frequency[frequency$author == "H.G. Wells",],
+  ~ proportion + `Jane Austen`
+)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

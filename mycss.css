@@ -104,37 +104,24 @@ blockquote {
     position: relative;
     padding: 10px 15px 10px 50px;
     box-sizing: border-box;
-    font-style: italic;
-    border: solid 2px #464646;
+    font-weight: bold;
+    /*border: solid 2px #464646;*/
+    background-color: #f8f8f8;
     color: #464646;
     margin:1.5em 2em 1.5em 2em;
 }
-
-blockquote:before{
-    display: inline-block;
-    position: absolute;
-    top: 10px;
-    left: 0;
-    vertical-align: middle;
-    content: "“";
-    font-family: sans-serif;
-    color: #77c0c9;
-    font-size: 90px;
-    line-height: 1;
-}
-
 blockquote p {
     padding: 0;
     margin: 10px 0;
     line-height: 1.7;
 }
-
 blockquote cite {
     display: block;
     text-align: right;
     color: #888888;
     font-size: 0.9em;
 }
+
 .math{
   font-size: 25px;
   font-family: "Computer Modern";
@@ -150,6 +137,9 @@ pre math {
   font-family: "Computer Modern";
 }
 
+p code {
+  font-weight: bold;
+}
 
 code,
 pre {

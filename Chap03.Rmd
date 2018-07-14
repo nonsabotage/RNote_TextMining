@@ -1,0 +1,283 @@
+---
+title: "Ch03 単語の出現頻度と特定の文書での出現頻度の分析"
+output:
+    html_document:
+        toc: true
+        toc_float: true
+        highlight: tango
+        theme: flatly
+        css: mycss.css
+        code_folding: show
+        include:
+            - in_header: in_head.html
+        df_print: "paged"
+
+---
+
+単語の出現頻度というのは
+文書を数量化する１つの手法である. 
+一方, あまり出現しない単語に重みを強くする
+方法がある. これを逆頻度解析という. 
+頻度解析と逆頻度解析を組み合わせると, 
+普段はわからないことが色々と見えてくる. 
+
+ある単語の逆文書頻度は次ぎのように定義されている. 
+
+$$
+idf(\textrm{単語}) = \log(\frac{n_{文書}}{n_{単語を含む文書}})
+$$
+
+
+# ライブラリー
+
+```{r setup, message=FALSE}
+
+# load libs
+libs <- c( "tidyverse", "tidytext", 
+           "janeaustenr", "gutenbergr", "scales", 
+           "wordcloud")
+for( lib in libs ) {
+    if(!require(lib, character.only = TRUE)) {
+        install.packages(lib)
+        library(lib, character.only = TRUE)
+    }
+}
+
+```
+
+
+# 単語出現頻度
+
+まずは単語出現頻度(tf)を調べてから
+tf-idfを調べる.
+
+
+```{r}
+book_words <-
+  austen_books() %>%
+  unnest_tokens(word, text) %>%
+  count(book, word, sort = TRUE) %>%
+  ungroup()
+
+total_words <-
+  book_words %>%
+  group_by(book) %>%
+  summarise(total = sum (n))
+
+book_words <- left_join(book_words, total_words, by = "book")
+
+book_words
+
+
+```
+
+
+
+上記の整理データを使い, 単語出現頻度を調べる. 
+グラフを見るとどの小説でも, 
+単語の利用頻度の分布は
+べき乗則に従っているように見える. つまり, 
+利用頻度が高い単語の数ほど少なく, 
+利用頻度が低い単語の数ほど多い. 
+
+```{r}
+ggplot(book_words, aes(n / total, fill = book)) + 
+  geom_histogram(show.legend = FALSE) + 
+  xlim(NA, 0.0009) + 
+  facet_wrap( ~ book, ncol = 2, scales = "free_y") + 
+  theme_light()
+```
+
+
+# ジップの法則
+
+べき乗則に従うことをジップの法則という. 
+もっと正確にいうとジップの法則では、
+単語の出現頻度は出現頻度順位に頒布例すると主張している. 
+
+```{r}
+freq_by_rank <- 
+  book_words %>%
+  group_by(book) %>% 
+  mutate(
+    rank = row_number(), 
+    `term frequency` = n / total
+  )
+freq_by_rank %>% head(15)
+```
+
+ランクと出現頻度の関係をプロットする. 
+
+```{r}
+freq_by_rank %>%
+  ggplot(aes(rank, `term frequency`, color = book)) + 
+  geom_line(size = 1.1, alpha = .8, show.legend = FALSE) + 
+  scale_x_log10() + 
+  scale_y_log10() + 
+  theme_light() + 
+  geom_smooth(method = "lm")
+```
+
+両対数スケールで
+線形関係になっていることが見て取れる. 
+しかし, 傾きは一定とは言えなさそうである. 
+また順位のずれは下位のものほど大きそうだ. 
+
+```{r}
+rank_subset <- 
+  freq_by_rank %>%
+  filter(
+    rank < 500, 
+    rank > 10
+  )
+
+lm(log10(`term frequency`) ~ log10(rank), data = rank_subset)
+
+```
+
+
+
+# bind_tf_idf
+
+`tf-idf`の考え方は, 文書のコレクション, 
+コーパスでの頻出後の重みを減らし, 
+希少語の重みを増やして, ここの文書における重要語を
+探し出すというものである. 
+つまり, 一般にはあまり出現しないものの, 
+テキストの中では重要な単語を探し出そうというものです. 
+
+```{r}
+book_words <-
+  book_words %>%
+  bind_tf_idf(word, book, n) 
+book_words %>% head()
+```
+
+
+出現頻度が高い単語ではidfが0になるので, 
+tf-idfも0になる.
+
+```{r}
+# tf-idfが高い単語を抽出
+book_words %>%
+  select(-total) %>% 
+  arrange(desc(tf_idf))
+```
+
+
+```{r fig.height=14, fig.width=9}
+# tf-idfが高い単語を可視化
+book_words %>% 
+  arrange(desc(tf_idf)) %>%
+  mutate(word = as_factor(word) %>% fct_rev()) %>%
+  group_by(book) %>% 
+  top_n(15) %>% 
+  ungroup()  %>%
+  ggplot(aes(word, tf_idf, fill = book)) + 
+  geom_col(show.legend = FALSE) + 
+  labs(x = NULL, y = "tf-idf") + 
+  facet_wrap( ~ book, ncol = 2, scales = "free") + 
+  coord_flip() + 
+  theme_light()
+```
+
+
+# 物理学書のコーパス
+
+
+```{r cache = TRUE}
+book_ids <- c (37729, 14725, 13476, 5001)
+physics <- 
+  gutenberg_download(book_ids, meta_fields = "author")
+
+physics_words <-
+  physics %>%
+  unnest_tokens(word, text) %>%
+  count(author, word, sort = TRUE) %>%
+  ungroup() 
+
+physics_words %>% head(10)
+
+
+```
+
+
+```{r fig.width=9, fig.height=10}
+# tf-idfを計算
+plot_physics <- 
+  physics_words %>%
+  bind_tf_idf(word, author, n) %>%
+  arrange(desc(tf_idf)) %>%
+  mutate(word = as_factor(word) %>% fct_rev()) %>%
+  mutate(author = as_factor(author))
+
+plot_physics %>%
+  group_by(author) %>%
+  top_n(15, tf_idf) %>%
+  ungroup() %>%
+  mutate(word = reorder(word, tf_idf)) %>%
+  ggplot(aes(word, tf_idf, fill = author)) + 
+  geom_col(show.legend = FALSE) + 
+  labs(x = NULL, y = "tf-idf") + 
+  facet_wrap(~author, ncol = 2, scales = "free") + 
+  coord_flip()+ 
+  theme_light()
+```
+
+
+アインシュタインの`eq`とは何であるのかを調べる. 
+
+```{r}
+physics %>%
+  filter(str_detect(text, "eq\\.")) %>%
+  select(text)
+```
+
+意味のない単語を取り除き, 
+データをクリーニングする. 
+
+```{r fig.height = 10, fig.width=9}
+mystopwords <-
+  data_frame(
+    word = c("eq", "co", "rc", "ac", "ak", "bn", 
+             "fig", "file", "cg", "cb", "cm")
+  )
+
+physics_words <-
+  anti_join(physics_words, mystopwords, by = "word")
+
+plot_physics <- 
+  physics_words %>%
+  bind_tf_idf(word, author, n) %>%
+  arrange(desc(tf_idf)) %>%
+  mutate(word = as_factor(word) %>% fct_rev()) %>%
+  group_by(author) %>%
+  top_n(15, tf_idf) %>%
+  ungroup() %>%
+  mutate(
+    author = as_factor(author)
+  )
+
+
+ggplot(plot_physics, aes(word, tf_idf, fill = author)) + 
+  geom_col(show.legend = FALSE) + 
+  labs(x = NULL, y = "tf-idf") + 
+  facet_wrap(~author, ncol = 2, scales = "free") + 
+  coord_flip() + 
+  theme_light()
+```
+
+# まとめ
+
+`tf-idf`分析を使うことで, 
+文書コレクションの中にある1つの文書で
+特徴的な単語を探しだすことができる. 
+つまり, 単語出現頻度という単純な指標を掘り下げるだけでも, 
+多くのことがわかる. 
+そして, dplyrを使えば容易に分析が実現できることがわかる.
+
+
+
+
+
+

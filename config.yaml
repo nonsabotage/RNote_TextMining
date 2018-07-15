@@ -1,0 +1,13 @@
+LIBS:
+  CRAN:
+    - tidyverse
+    - tidytext
+    - janeaustenr
+    - gutenbergr
+    - scales
+    - wordcloud
+    - ggraph
+    - widyr
+    - igraph
+    - rlang
+

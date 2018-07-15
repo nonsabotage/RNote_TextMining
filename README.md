@@ -18,4 +18,6 @@
 - [Ch02 整理データを使ったセンチメント分析](Chap02.html)
 - [Ch03 単語の出現頻度と特定の文書での出現頻度の分析](Chap03.html)
 - [Ch04 単語間の関係:nグラムと相関](Chap04.html)
+	- rlangを使ってngramsの関数を作った
 - [Ch05 未整理形式への変換](Chap05.html)
+	- unnest(map)の記法を覚えよう

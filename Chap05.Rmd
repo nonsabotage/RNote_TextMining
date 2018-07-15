@@ -1,0 +1,408 @@
+---
+title: "Ch05 未整理形式への変換"
+output:
+    html_document:
+        toc: true
+        toc_float: true
+        highlight: tango
+        theme: flatly
+        css: mycss.css
+        code_folding: show
+        include:
+            - in_header: in_head.html
+        df_print: "paged"
+
+---
+
+
+これまでは整理データのみを扱ってきた. 
+実際には整理データではない, 未構造化データを扱うことが多く, 
+そのためのパッケージも多数用意されている. 
+大事なのは`glue`, つまりデータ構造を結び付けることである. 
+
+
+
+
+# ライブラリー
+
+```{r setup, message=FALSE}
+config <- yaml::read_yaml("config.yaml")
+for (p in config$LIBS$CRAN) {
+  if (!require(p, character.only = TRUE)) {
+    install.packages(p)
+  }
+  require(p, character.only = TRUE)
+}
+```
+
+# DTMの整理
+
+DTM(文書-単語行列)はテキストマイニングの操作対象として
+最も広く使われているデータ構造の１つで, 次ぎのような
+特徴を持っている. 
+
+- 各行は1つの文書を表します
+- 各列は1つの単語を表します
+- 個々の値は, (一般に)その単語の文書内における出現頻度である
+
+文書と単語の組み合わせでみると, 
+ほとんどが0であるので, 
+DTMは疎行列として実装されるのが通常である. 
+
+tidytextパッケージではDTMと整理データを相互変換する
+関数を用意している. 
+
+- tidy: DTM→整理データ
+- cast: ユニグラムの整理データをDTMに
+
+
+## DTMオブジェクトの整理
+
+最もメジャーなのはtmパッケージの`DocumentTermMatrix`クラスである. 
+
+
+```{r}
+data("AssociatedPress", package = "topicmodels")
+
+AssociatedPress
+```
+
+
+```{r}
+# 文書内の単語にアクセス
+terms <- Terms(AssociatedPress)
+head(terms)
+```
+
+
+DTMを整理データとして分析したいたいめ, 
+1行1文書1トークンという整理データを作成していく
+
+```{r}
+ap_td <- tidy(AssociatedPress)
+ap_td %>% top_n(20)
+```
+
+この状態ならばセンチメント分析はすぐにできる
+
+```{r}
+ap_sentiments <- 
+  ap_td %>%
+  inner_join(get_sentiments("bing"), by = c (term = "word"))
+
+ap_sentiments %>% head(20)
+```
+
+```{r}
+ap_sentiments %>% 
+  count(sentiment, term, wt = count) %>%
+  ungroup() %>%
+  filter(n >= 200) %>%
+  mutate(n = ifelse(sentiment == "negative", -n, n)) %>%
+  mutate(term = reorder(term, n)) %>%
+  ggplot(aes(term, n, fill = sentiment)) +
+  geom_bar(stat = "identity") + 
+  ylab("Contribution to sentiment") + 
+  coord_flip()
+```
+
+
+
+## dfmオブジェクトの整理
+
+DTMの別の実装を提供してるパッケージもある. 
+
+```{r}
+data("data_corpus_inaugural", package = "quanteda")
+inaug_dfm <- 
+  quanteda::dfm(data_corpus_inaugural, verbose = FALSE)
+
+inaug_dfm
+```
+
+
+tidyメソッドは, dfmオブジェクトにも対応している. 
+
+```{r}
+
+inaug_td <- tidy(inaug_dfm)
+inaug_td %>% top_n(20)
+```
+
+それぞれの就任演説で最も特徴的な単語を探す. 
+これは`tf-idf`分析により数量化できる. 
+
+```{r}
+inaug_tf_idf <- 
+  inaug_td %>%
+  bind_tf_idf(term, document, count) %>%
+  arrange(desc(tf_idf)) 
+
+inaug_tf_idf %>% top_n(20, tf_idf)
+```
+
+
+```{r}
+inaug_tf_idf %>%
+  filter(document %in% c("1793-Washington", "2009-Obama")) %>%
+  group_by(document) %>% 
+  top_n(10, tf_idf) %>%
+  arrange(desc(tf_idf)) %>% 
+  ungroup() %>%
+  ggplot(aes(term, tf_idf)) + 
+  geom_col() + 
+  facet_wrap( ~ document, ncol = 2, scales = "free") + 
+  theme_light() +
+  coord_flip()
+```
+
+
+文書から年と抽出し, 各年ごとに単語の
+出現回数を計算する. 
+
+
+```{r}
+# completeでyear x termの全ての組み合わせを作ってから集計
+year_term_counts <- 
+  inaug_td %>%
+  tidyr::extract(document, "year", "(\\d+)", convert = TRUE) %>%
+  complete(year, term, fill = list(count = 0)) %>%
+  group_by(year) %>% 
+  mutate(year_total = sum(count)) 
+```
+
+
+```{r}
+year_term_counts %>% 
+  filter(term %in% c ("god", "america", "foreign", "union", 
+                      "constitution", "freedom")) %>%
+  ggplot(aes(year, count / year_total)) + 
+  geom_point() + 
+  geom_smooth() + 
+  facet_wrap( ~ term, scales = "free_y") + 
+  scale_y_continuous(labels = scales::percent_format()) +
+  ylab("% frequency of word in inaugural address")
+```
+
+# 整理データの行列へのキャスト
+
+整理データからDTMへ変換を行う`cast_`を紹介する. 
+
+```{r}
+ap_td %>%
+  cast_dtm(document, term, count)
+```
+
+`dfmオブジェクト`へでもキャストができる. 
+
+```{r}
+ap_td %>%
+  cast_dfm(document, term, count)
+```
+
+
+純粋に疎行列に変換することも可能. 
+
+```{r}
+m <- ap_td %>%
+  cast_sparse(document, term, count)
+
+class(m)
+```
+
+
+このため, 前章まで利用してきた整理データの
+サンプルデータも用意にDTM化が可能である. .
+
+```{r}
+austen_dtm <- 
+  austen_books() %>% 
+  unnest_tokens(word, text) %>% 
+  count(book, word) %>% 
+  cast_dtm(book, word, n)
+
+austen_dtm
+```
+
+
+# メタデータを持つ場合
+
+トークン化する前の文書コレクションを格納するために
+設計されたデータ構造がいくつかある. 
+これらは「**コーパス**」と呼ばれる. 
+
+例えばtmパッケージにあるロイターの50本のニュース記事を
+収録するacqコーパスを見てみる. 
+
+
+```{r}
+data("acq")
+
+acq
+```
+
+```{r}
+# 最初の文書
+acq[[1]]
+```
+
+tidy関数を使うことで, **メタデータ**とともに1行1コーパスに
+変換することが可能である.
+
+```{r}
+acq_td <- tidy(acq)
+acq_td
+```
+
+
+`unnest_tokens`をこの表に対して使うことで, 
+ロイターのコーパスを整理データに変換ができる. 
+
+```{r}
+acq_tokens <-
+  acq_td %>% 
+  select(-places) %>%
+  unnest_tokens(word, text) %>%
+  anti_join(stop_words, by = "word")
+
+
+# 最頻出語
+acq_tokens %>%
+  count(word, sort = TRUE) %>% head()
+```
+
+
+```{r}
+# tf-idf
+acq_tokens %>%
+  count(id, word) %>%
+  bind_tf_idf(word, id, n) %>%
+  arrange(desc(tf_idf))
+```
+
+
+
+## 株式に関する記事のマイニング
+
+
+オンラインフィードに接続し, 
+キーワードに基づいてニュース記事を読み出すパッケージを利用して, 
+Microsft(MSFT)株に関連する記事を取得する. 
+
+```{r cache=TRUE}
+company <- 
+  c ("Microsoft", "Apple", "Google", "Amazon", "Facebook", 
+     "Twitter", "IBM", "Yahoo", "Netflix")
+symbol <- 
+  c ("MSFT", "APPL", "GOOG", "AMZN", "FB", "TWTR", "IBM", "YHOO", 
+     "NFLX")
+
+download_articles <- function (symbol) {
+  WebCorpus(YahooFinanceSource(symbol))
+}
+
+stock_articles <- 
+  data_frame(
+    company = company, symbol = symbol
+  ) %>% 
+  mutate(corpus = map(symbol, download_articles))
+
+stock_articles
+```
+
+
+
+`unnest(map)`の記法は知らなかった. 
+
+```{r}
+stock_tokens <- 
+  stock_articles %>% 
+  # with(., map(corpus, tidy)) %>% bind_rows()と
+  # 同じ
+  unnest(map(corpus, tidy)) %>%
+  unnest_tokens(word, text) %>% 
+  select(company, datetimestamp, word, id, heading)
+
+stock_tokens %>% head()
+``` 
+
+
+トークンナイズしたので, 
+センチメント分析を行い記事が
+ポイジティ部なものかどうかを判断する. 
+
+```{r}
+stock_tokens %>%
+  anti_join(stop_words, by = "word") %>%
+  count(word, id, sort = TRUE) %>% 
+  inner_join(get_sentiments("afinn"), by = "word") %>% 
+  group_by(word) %>% 
+  summarise(contribution = sum(n * score)) %>% 
+  top_n(12, abs(contribution)) %>% 
+  mutate(word = reorder(word, contribution)) %>% 
+  ggplot(aes(word, contribution)) + 
+  geom_col() + 
+  coord_flip() + 
+  labs(y = "Frequency of word * AFINN score") + 
+  theme_light()
+```
+
+実は株式用語の感情はAFINNでは不適当であるので, 
+別の辞書を使う. 
+
+```{r}
+stock_tokens %>% 
+  count(word) %>% 
+  inner_join(get_sentiments("loughran"), by = "word") %>% 
+  group_by(sentiment) %>% 
+  top_n(10, n) %>% 
+  ungroup() %>% 
+  mutate(word = reorder(word, n)) %>% 
+  ggplot(aes(word, n)) + 
+  geom_col() + 
+  coord_flip() + 
+  facet_wrap( ~ sentiment, scales = "free") + 
+  ylab("Frequency of this word in the recent financial articles") + 
+  theme_light()
+```
+
+
+上記の結果で辞書が概ね妥当なおことがわかったので, 
+ここでは個々のコーパスに含まれる個々の
+感情を表す単語の数を数える処理をおこなう. 
+
+
+```{r}
+stock_sentiment_count <- 
+  stock_tokens %>% 
+  inner_join(get_sentiments("loughran"), by = "word") %>% 
+  count(sentiment, company) %>% 
+  spread(sentiment, n, fill = 0)
+
+stock_sentiment_count %>% 
+  mutate(score = (positive - negative) / (positive + negative)) %>% 
+  mutate(company = reorder(company, score)) %>% 
+  ggplot(aes(company, score, fill = score > 0)) + 
+  geom_col(show.legend = FALSE) + 
+  coord_flip() + 
+  labs(
+    x = "Company", 
+    y = "Positiveity socre among 20 recent news articles"
+  )
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

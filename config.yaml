@@ -10,4 +10,11 @@ LIBS:
     - widyr
     - igraph
     - rlang
+    - tm
+    - topicmodels
+    - quanteda
+    - methods
+    - Matrix
+    - tm.plugin.webmining
+
 

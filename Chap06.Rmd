@@ -1,0 +1,423 @@
+---
+title: "Ch06 トピックモデリング"
+output:
+    html_document:
+        toc: true
+        toc_float: true
+        highlight: tango
+        theme: flatly
+        css: mycss.css
+        code_folding: show
+        include:
+            - in_header: in_head.html
+        df_print: "paged"
+
+---
+
+
+ブログや新聞記事といった文書のコレクションを
+自然なグループに分類してグループごとに
+理解するようにしたい. 
+トピックモデリングはそのような文書を教師なしで
+分類する方法で, 数値データのクラスタイリングと
+よく似ている. 
+
+LDA(Latent Dirichlet Allocation, 潜在的ディレクレ配分法)は
+特に広く使われているトピックモデリングの手法である. 
+
+
+
+
+# ライブラリー
+
+```{r setup, message=FALSE}
+config <- yaml::read_yaml("config.yaml")
+for (p in config$LIBS$CRAN) {
+  if (!require(p, character.only = TRUE)) {
+    install.packages(p)
+  }
+  require(p, character.only = TRUE)
+}
+```
+
+# LDA
+
+## LDAの原則
+
+### 文書はトピックの組み合わせ
+
+個々の文書は, 特定の割合で複数のトピックに
+関連する単語が含まれたものだと考える. 
+例えば文書Ａは「トピックＡが90%, トピックＢが10%」
+といった具体. 
+
+### トピックは単語の組み合わせ
+
+例えばあると文書が「政治」と「娯楽」の２つのトピックから
+構成されている考えるとき, 
+「予算」という単語はどちらのトピックにも影響を与えるが, 
+「議会」という単語は前者にしか影響を与えないと考えられる. 
+
+### LDAによる分類
+
+```{r}
+data("AssociatedPress")
+AssociatedPress
+```
+
+
+```{r cache=TRUE}
+# 2群に分類
+ap_lda <- LDA(
+  AssociatedPress, 
+  k = 2,
+  control = list(seed = 1234)
+)
+ap_lda
+```
+
+## 単語-トピック確率
+
+モデルオブジェクトを整理する. 
+
+```{r}
+ap_topics <- tidy(ap_lda, matrix = "beta")
+ap_topics
+```
+
+
+
+```{r}
+ap_top_terms <- 
+  ap_topics %>% 
+  group_by(topic) %>% 
+  top_n(10, beta) %>% 
+  ungroup() %>% 
+  arrange(topic, -beta)
+
+ap_top_terms %>% 
+  mutate(term = reorder(term, beta)) %>% 
+  ggplot(aes(term, beta, fill = factor(topic))) + 
+  geom_col(show.legend = FALSE) + 
+  facet_wrap( ~ topic, scales = "free") + 
+  coord_flip()
+```
+
+
+上記のグラフでトピック間で共通する単語がわかる. 
+一方でトピック間で差が大きい単語に注目することも
+できる. 
+
+
+```{r}
+beta_spread <- 
+  ap_topics %>% 
+  mutate(topic = paste0("topic", topic)) %>% 
+  spread(topic, beta) %>% 
+  filter(topic1 > .001 | topic2 > .001) %>% 
+  mutate(log_ratio = log2(topic2 / topic1))
+
+beta_spread %>% head()
+```
+
+
+```{r}
+beta_spread %>% 
+  top_n(20, abs(log_ratio)) %>% 
+  mutate(term = fct_reorder(term, log_ratio)) %>%
+  ggplot(aes(term, log_ratio)) +
+  geom_col() +
+  coord_flip() + 
+  theme_bw()
+```
+
+
+## 文書トピック確率
+
+LDAは, 個々のトピックを単語の組み合わせと考えるだけでなく,　
+文書をトピックの組み合わせとしてモデリングすることも
+できる. 
+
+```{r}
+ap_documents <- tidy(ap_lda, matrix = "gamma")
+ap_documents %>% head()
+```
+
+
+
+```{r}
+tidy(AssociatedPress) %>% 
+  filter(document == 6) %>% 
+  arrange(desc(count)) %>%
+  head()
+```
+
+# 例：図書館あらし
+
+正解が分かっている文書の分類を使って, 
+トピックモデルの検証を行う. 
+
+想定している状況は「四つの本が章単位にバラバラにされ, 
+混ざっているのを, 教師なし分類する」というもの. 
+
+```{r}
+titles <- c(
+  "Twenty Thousand Leagues under the Sea", 
+  "The War of the Worlds", 
+  "Pride and Prejudice", 
+  "Great Expectations"
+)
+
+books <-
+  gutenberg_works(title %in% titles) %>%
+  gutenberg_download(meta_fields = "title") 
+```
+
+
+ストップワードを除くなどの前処理. 
+
+```{r}
+reg <- regex("^chapter ", ignore_case = TRUE)
+by_chapter <-
+  books %>% 
+  group_by(title) %>% 
+  mutate(chapter = cumsum(str_detect(text, reg))) %>% 
+  ungroup() %>% 
+  filter(chapter > 0) %>% 
+  unite(document, title, chapter)
+
+# 単語に分類
+by_chapter_word <- 
+  by_chapter %>% 
+  unnest_tokens(word, text)
+
+# 文書-単語の組合わせをカウント
+word_counts <- 
+  by_chapter_word %>% 
+  anti_join(stop_words, by = "word") %>% 
+  count(document, word, sort = TRUE) %>% 
+  ungroup() 
+
+word_counts %>% top_n(20)
+```
+
+## 章を対象とするLDA
+
+topicmodelsが想定しているデータ構造は
+DocumentTermMatrixであるので, castする. 
+
+```{r}
+chapters_dtm <- 
+  word_counts %>% 
+  cast_dtm(document, word, n)
+
+chapters_dtm
+```
+
+LDAを行う準備が出来たので, 実験してみる. 
+ここでは４つの本ということがわかっているので, 
+`k=4`で実験をする. 
+
+```{r cache=TRUE}
+chapters_lda <-
+  LDA(chapters_dtm, k = 4, control = list(seed=1234))
+chapters_lda
+```
+
+$\beta$値を見ることで, トピックx単語の確率を見ること
+ができる. 
+
+```{r}
+chapter_topics <- 
+  tidy(chapters_lda, matrix = "beta")
+chapter_topics %>% head(19)
+```
+
+```{r}
+top_terms <- 
+  chapter_topics %>% 
+  group_by(topic) %>% 
+  top_n(5, beta) %>% 
+  ungroup() %>% 
+  arrange(topic, -beta)
+
+top_terms
+```
+
+
+
+```{r}
+top_terms %>% 
+  mutate(term = fct_reorder(term, beta)) %>%
+  group_by(topic) %>% 
+  top_n(5, abs(beta)) %>% 
+  ungroup() %>% 
+  mutate(topic = str_c("topic", topic)) %>% 
+  ggplot(aes(term, beta, fill = as_factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() + 
+  facet_wrap( ~ topic, ncol = 2, scales = "free") + 
+  theme_light()
+```
+
+
+
+
+## 文書ごとの分類
+
+
+この分析の個々の文書は1つの章を表してる. 
+そこで, 個々の文書のトピックが何かを知り, 
+章を集めて正しい本を復元したい. 
+これには文書-トピック確率$\gamma$を調べる必要がある. 
+
+```{r}
+chapters_gamma <- 
+  tidy(chapters_lda, matrix = "gamma")
+chapters_gamma %>% head(10)
+```
+
+文書名をタイトルと章に分けて, 
+文書-トピック確率を可視化する. 
+
+```{r}
+chapters_gamma <- 
+  chapters_gamma %>% 
+  separate(
+    document, c("title", "chapter"), sep = "_", convert = TRUE
+  )
+chapters_gamma %>% head()
+```
+
+
+可視化することで, どの文書がどのトピックであるのかが, 
+一目瞭然である. 
+
+
+
+```{r}
+# gammaを可視化
+# プロットする前に, トピック1, トピック2の順にソート
+chapters_gamma %>% 
+  mutate(title = reorder(title, gamma * topic)) %>% 
+  ggplot(aes(factor(topic), gamma)) +
+  geom_boxplot() + 
+  facet_wrap(~ title) + 
+  theme_light()
+```
+
+
+
+各章と最も関連が高いトピックを見てみる. 
+
+```{r}
+chapter_classifications <- 
+  chapters_gamma %>% 
+  group_by(title, chapter) %>% 
+  top_n(1, gamma) %>% 
+  ungroup() 
+
+chapter_classifications %>% head(20)
+```
+
+
+次にそれぞれをここの文書の合意トピック（文書のトピックとして最も妥当なもの）と
+比較することでどの文書の単語が最も間違って分類されているかがわかる. 
+
+```{r}
+book_topics <- 
+  chapter_classifications %>% 
+  count(title, topic) %>% 
+  group_by(title) %>% 
+  top_n(1, n) %>% 
+  ungroup() %>% 
+  transmute(consensus = title, topic)
+
+chapter_classifications %>% 
+  inner_join(book_topics, by = "topic") %>% 
+  filter(title != consensus) 
+```
+
+間違って分類したのが, 
+2つの章だけなので高性能であることがわかる. 
+
+
+## 単語ごとの分類:augment
+
+LDAアルゴリズムには, 各文書の個々の単語をトピックに分類するステップがある. 
+
+一般に文書内に特定のトピックに分類される単語が多ければ多いほど, 
+文書-トピック分類の重み(gamma)は大きくなるはず. 
+そのため, 元の文書-単語のペアに戻り, 各文書のどの単語がどのトピックに分類されるのか調べる. 
+これには`augment`を使う. これにより, 
+もとのデータの観測値に情報を付与する. 
+
+
+
+```{r}
+assignments <- 
+  augment(chapters_lda, data = chapters_dtm)
+assignments %>% head(20)
+```
+
+
+`.topic`が結果で, それ以外が観測値である. 
+この表にタイトルを付ければ, どの単語が誤って分類されたかがわかる. 
+
+```{r}
+assignments <- 
+  assignments %>% 
+  separate(
+    document, 
+    c("title", "chapter"), 
+    sep = "_", 
+    convert = TRUE) %>% 
+  inner_join(book_topics, by = c(".topic" = "topic"))
+
+assignments %>% head()
+```
+
+
+`ggplot2::geom_tile`を使うことで, 
+混同行列を可視化できる. 
+
+```{r}
+assignments %>% 
+  count(title, consensus, wt = count) %>% 
+  group_by(title) %>% 
+  mutate(percent = n / sum(n)) %>% 
+  ggplot(aes(consensus, title, fill = percent)) +
+  geom_tile() +
+  scale_fill_gradient2(high = "red", label = percent_format()) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    panel.grid = element_blank()) + 
+  labs(x = "Book words were assigned to", 
+       y = "Book words came from", 
+       fill = "% of assignments")
+
+```
+
+
+
+Great Exceptionsが少し間違って推定されていることがわかる. 
+以下では最も分類ミスが多かった単語を見る. 
+
+```{r}
+wrong_words <- 
+  assignments %>% 
+  filter(title != consensus) 
+
+wrong_words %>% head()
+```
+
+```{r}
+wrong_words %>% 
+  count(title, consensus, term, wt = count) %>% 
+  ungroup() %>% 
+  arrange(desc(n)) %>% 
+  head(20)
+```
+
+
